@@ -16,7 +16,6 @@ assert(postgresClientConnection, "POSTGRES_CONNECTION_STRING is required");
 // CHANGE HERE (ACCORDING TO THE CSV FILE)
 const fileValidationScheme = z.object({
   crawl_timestamp: z.string().datetime().optional(),
-  platform: z.string(),
   url: z.string().url(),
   title: z.string(),
   article: z.string(),
@@ -26,21 +25,11 @@ const fileValidationScheme = z.object({
 
 type IFileRecord = z.infer<typeof fileValidationScheme>;
 
-//  CHANGE HERE (ACCORDING TO THE CSV FILE) [key, value]
-const fileToDbMap = new Map([
-  ["crawlTimestamp", "crawl_timestamp"],
-  ["url", "url"],
-  ["title", "title"],
-  ["content", "article"],
-  ["author", "author"],
-  ["articleDate", "date"],
-]);
-
-const platformId = 1;
+const platformId = 2;
 
 // CHANGE HERE
 const csvFilePath =
-  "/home/yudis-dev/Codes/Research/sun-sentiment/web-crawler/output/20240817203519_bisnis.com.csv";
+  "/home/yudis-dev/Codes/Research/sun-sentiment/web-crawler/output/20240825064539_asianinvestor.net.csv";
 /**
  * END OF CONFIGURATION
  */
@@ -102,11 +91,17 @@ csvParser.on("end", async function () {
   console.log("Total records: ", records.length);
 
   try {
+    // Insert articles
     await db.transaction(async (tx) => {
-      // Insert articles
-      const articlesToInsert = records.map((record) => {
+      // create map to remove duplicate records based on URL
+      const articlesToInsertMap = new Map();
+      records.forEach((record) => {
+        // if (articlesToInsertMap.has(record.url)) {
+        //   console.log("Duplicate URL: ", record.url);
+        // }
+
         // CHANGE HERE (ACCORDING TO THE CSV FILE)
-        return {
+        articlesToInsertMap.set(record.url, {
           platformId: platformId,
           crawlTimestamp: record.crawl_timestamp
             ? new Date(record.crawl_timestamp)
@@ -116,53 +111,10 @@ csvParser.on("end", async function () {
           title: record.title,
           content: record.article,
           author: record.author,
-        };
-        // // const crawlTimestampKey = fileToDbMap.get("crawlTimestamp");
-        // // const articleDateKey = fileToDbMap.get("articleDate");
-        // // const urlKey = fileToDbMap.get("url");
-        // // const titleKey = fileToDbMap.get("title");
-        // // const contentKey = fileToDbMap.get("content");
-        // // const authorKey = fileToDbMap.get("author");
-
-        // // if (
-        // //   !crawlTimestampKey ||
-        // //   !articleDateKey ||
-        // //   !urlKey ||
-        // //   !titleKey ||
-        // //   !contentKey ||
-        // //   !authorKey
-        // // ) {
-        // //   console.error(record);
-        // //   console.error({
-        // //     crawlTimestampKey,
-        // //     articleDateKey,
-        // //     urlKey,
-        // //     titleKey,
-        // //     contentKey,
-        // //     authorKey,
-        // //   });
-        // //   console.error("One of the required keys is missing");
-        // //   process.exit(1);
-        // // }
-
-        // return {
-        //   // @ts-expect-error
-        //   crawlTimestamp: new Date(record[crawlTimestampKey]),
-        //   // @ts-expect-error
-        //   articleDate: record[articleDateKey],
-        //   // @ts-expect-error
-        //   url: record[urlKey],
-        //   // @ts-expect-error
-        //   title: record[titleKey],
-        //   // @ts-expect-error
-        //   content: record[contentKey],
-        //   // @ts-expect-error
-        //   author: record[authorKey],
-        //   platformId: platformId,
-        // };
+        });
       });
 
-      // await tx.insert(articles).values(articlesToInsert);
+      const articlesToInsert = Array.from(articlesToInsertMap.values());
 
       // insert 1k records at a time
       for (let i = 0; i < articlesToInsert.length; i += 1000) {
