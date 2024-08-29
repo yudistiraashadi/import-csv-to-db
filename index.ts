@@ -15,6 +15,16 @@ const postgresClientConnection = process.env.POSTGRES_CONNECTION_STRING;
 assert(postgresClientConnection, "POSTGRES_CONNECTION_STRING is required");
 
 // CHANGE HERE (ACCORDING TO THE CSV FILE)
+const csvHeaders = [
+  "scrapping_date",
+  "link",
+  "title",
+  "content",
+  "author",
+  "article_date",
+];
+
+// CHANGE HERE (ACCORDING TO THE CSV FILE)
 const fileValidationScheme = z.object({
   scrapping_date: z.string().datetime().optional(),
   link: z.string().url(),
@@ -30,12 +40,14 @@ const platformId = 1;
 
 //Hard coded directory has been used.
 // CHANGE HERE (FOR MULTIPLE CSV FILES)
-const csvDirPath =
-  "/home/yudis/Codes/Research/ITS/SUN-sentiment/import-csv-to-db/data/bisnis-crawler/scraped_articles/";
+// MAKE THIS EMPTY IF YOU WANT TO USE SINGLE CSV FILE
+const csvDirPath = "";
+//   "/home/yudis/Codes/Research/ITS/SUN-sentiment/import-csv-to-db/data/bisnis-crawler/scraped_articles/";
 
 // CHANGE HERE (FOR SINGLE CSV FILE)
-// const csvFilePath =
-//   "/home/yudis/Codes/Research/ITS/SUN-sentiment/import-csv-to-db/data/bisnis-crawler/scraped_articles/Analisis_Sentimen_scraped_articles.csv";
+// MAKE THIS EMPTY IF YOU WANT TO USE MULTIPLE CSV FILES
+const csvFilePath =
+  "/home/yudis/Codes/Research/ITS/SUN-sentiment/import-csv-to-db/data/bisnis-crawler/scraped_articles/Analisis_Sentimen_scraped_articles.csv";
 /**
  * END OF CONFIGURATION
  */
@@ -69,103 +81,111 @@ const db = drizzle(queryClient, {
 });
 
 // Read the CSV file
-fs.readdirSync(csvDirPath)
-  .filter((filename: string) => {
-    return filename.split(".")[1] == "csv";
-  })
-  .forEach((file) => {
-    const csvFilePath = path.join(csvDirPath, file);
+if ((csvDirPath && csvFilePath) || (!csvDirPath && !csvFilePath)) {
+  console.error("Please specify either csvDirPath or csvFilePath");
+  process.exit(1);
+}
 
-    const records: IFileRecord[] = [];
+let dirResult: string[];
 
-    fs.createReadStream(csvFilePath)
-      .pipe(
-        csv({
-          strict: true,
-          headers: [
-            "title",
-            "scrapping_date",
-            "article_date",
-            "author",
-            "link",
-            "content",
-          ],
-          skipLines: 1,
-        })
-      )
-      .on("data", function (data) {
-        try {
-          const validatedRecord = fileValidationScheme.parse(data);
-          records.push(validatedRecord);
-        } catch (error) {
-          console.error(error);
-          console.error("Error parsing record: ", data);
-          console.error("Current length: " + records.length);
-          process.exit(1);
-        }
+if (csvDirPath) {
+  dirResult = fs.readdirSync(csvDirPath);
+} else {
+  dirResult = [csvFilePath];
+}
+
+dirResult.forEach((file) => {
+  let csvFilePath: string;
+
+  if (csvDirPath) {
+    csvFilePath = path.join(csvDirPath, file);
+  } else {
+    csvFilePath = file;
+  }
+
+  const records: IFileRecord[] = [];
+
+  fs.createReadStream(csvFilePath)
+    .pipe(
+      csv({
+        strict: true,
+        headers: csvHeaders,
+        skipLines: 1,
       })
-      .on("error", function (err) {
-        console.error(err);
+    )
+    .on("data", function (data) {
+      try {
+        const validatedRecord = fileValidationScheme.parse(data);
+        records.push(validatedRecord);
+      } catch (error) {
+        console.error(error);
+        console.error("Error parsing record: ", data);
+        console.error("Current length: " + records.length);
         process.exit(1);
-      })
-      .on("end", async function () {
-        console.log(`success parsing csv file: ${csvFilePath}`);
-        console.log("Total records: ", records.length);
+      }
+    })
+    .on("error", function (err) {
+      console.error(err);
+      process.exit(1);
+    })
+    .on("end", async function () {
+      console.log(`success parsing csv file: ${csvFilePath}`);
+      console.log("Total records: ", records.length);
 
-        try {
-          // Insert articles
-          await db.transaction(async (tx) => {
-            // create map to remove duplicate records based on URL
-            const articlesToInsertMap = new Map();
-            records.forEach((record) => {
-              articlesToInsertMap.set(record.link, {
-                platformId: platformId,
-                crawlTimestamp: record.scrapping_date
-                  ? new Date(record.scrapping_date)
-                  : undefined,
-                articleDate: record.article_date,
-                title: record.title,
-                content: record.content,
-                author: record.author,
-                url: record.link,
-              });
+      try {
+        // Insert articles
+        await db.transaction(async (tx) => {
+          // create map to remove duplicate records based on URL
+          const articlesToInsertMap = new Map();
+          records.forEach((record) => {
+            articlesToInsertMap.set(record.link, {
+              platformId: platformId,
+              crawlTimestamp: record.scrapping_date
+                ? new Date(record.scrapping_date)
+                : undefined,
+              articleDate: record.article_date,
+              title: record.title,
+              content: record.content,
+              author: record.author,
+              url: record.link,
             });
-
-            const articlesToInsert = Array.from(articlesToInsertMap.values());
-
-            if (articlesToInsert.length === 0) {
-              console.log("No new articles to insert");
-              return;
-            }
-
-            // insert 1k records at a time
-            for (let i = 0; i < articlesToInsert.length; i += 1000) {
-              const articlesToInsertTemp = articlesToInsert.slice(i, i + 1000);
-
-              if (articlesToInsertTemp.length === 0) {
-                break;
-              }
-
-              await tx
-                .insert(articles)
-                .values(articlesToInsertTemp)
-                .onConflictDoUpdate({
-                  target: articles.url,
-                  set: {
-                    crawlTimestamp: sql`EXCLUDED.crawl_timestamp`,
-                    articleDate: sql`EXCLUDED.article_date`,
-                    title: sql`EXCLUDED.title`,
-                    content: sql`EXCLUDED.content`,
-                    author: sql`EXCLUDED.author`,
-                  },
-                });
-            }
-
-            console.log(`Inserted articles length: ${articlesToInsert.length}`);
           });
-        } catch (error) {
-          console.error(error);
-          process.exit(1);
-        }
-      });
-  });
+
+          const articlesToInsert = Array.from(articlesToInsertMap.values());
+
+          if (articlesToInsert.length === 0) {
+            console.log("No new articles to insert");
+            return;
+          }
+
+          // insert 1k records at a time
+          for (let i = 0; i < articlesToInsert.length; i += 1000) {
+            const articlesToInsertTemp = articlesToInsert.slice(i, i + 1000);
+
+            if (articlesToInsertTemp.length === 0) {
+              break;
+            }
+
+            await tx
+              .insert(articles)
+              .values(articlesToInsertTemp)
+              .onConflictDoUpdate({
+                target: articles.url,
+                set: {
+                  crawlTimestamp: sql`EXCLUDED.crawl_timestamp`,
+                  articleDate: sql`EXCLUDED.article_date`,
+                  title: sql`EXCLUDED.title`,
+                  content: sql`EXCLUDED.content`,
+                  author: sql`EXCLUDED.author`,
+                },
+              });
+          }
+
+          console.log(`Inserted articles length: ${articlesToInsert.length}`);
+        });
+      } catch (error) {
+        console.error(error);
+        process.exit(1);
+      }
+    });
+});
