@@ -6,6 +6,7 @@ import assert from "node:assert";
 import fs from "node:fs";
 import csv from "csv-parser";
 import { sql } from "drizzle-orm";
+import path from "node:path";
 
 /**
  * CONFIGURATION
@@ -15,21 +16,26 @@ assert(postgresClientConnection, "POSTGRES_CONNECTION_STRING is required");
 
 // CHANGE HERE (ACCORDING TO THE CSV FILE)
 const fileValidationScheme = z.object({
-  crawl_timestamp: z.string().datetime().optional(),
-  url: z.string().url(),
+  scrapping_date: z.string().datetime().optional(),
+  link: z.string().url(),
   title: z.string(),
-  article: z.string(),
+  content: z.string().min(1),
   author: z.string().optional(),
-  date: z.string().date(),
+  article_date: z.string().date(),
 });
 
 type IFileRecord = z.infer<typeof fileValidationScheme>;
 
-const platformId = 2;
+const platformId = 1;
 
-// CHANGE HERE
-const csvFilePath =
-  "/home/yudis-dev/Codes/Research/sun-sentiment/web-crawler/output/20240825064539_asianinvestor.net.csv";
+//Hard coded directory has been used.
+// CHANGE HERE (FOR MULTIPLE CSV FILES)
+const csvDirPath =
+  "/home/yudis/Codes/Research/ITS/SUN-sentiment/import-csv-to-db/data/bisnis-crawler/scraped_articles/";
+
+// CHANGE HERE (FOR SINGLE CSV FILE)
+// const csvFilePath =
+//   "/home/yudis/Codes/Research/ITS/SUN-sentiment/import-csv-to-db/data/bisnis-crawler/scraped_articles/Analisis_Sentimen_scraped_articles.csv";
 /**
  * END OF CONFIGURATION
  */
@@ -62,87 +68,104 @@ const db = drizzle(queryClient, {
   },
 });
 
-const csvParser = csv({
-  strict: true,
-});
-
-const records: IFileRecord[] = [];
-
-// Use the readable stream api to consume records
-csvParser.on("data", function (data) {
-  try {
-    const validatedRecord = fileValidationScheme.parse(data);
-    records.push(validatedRecord);
-  } catch (error) {
-    console.error(error);
-    console.error("Error parsing record: ", data);
-    console.error("Current length: " + records.length);
-    process.exit(1);
-  }
-});
-// Catch any error
-csvParser.on("error", function (err) {
-  console.error(err);
-  process.exit(1);
-});
-
-csvParser.on("end", async function () {
-  console.log("success parsing csv file");
-  console.log("Total records: ", records.length);
-
-  try {
-    // Insert articles
-    await db.transaction(async (tx) => {
-      // create map to remove duplicate records based on URL
-      const articlesToInsertMap = new Map();
-      records.forEach((record) => {
-        // if (articlesToInsertMap.has(record.url)) {
-        //   console.log("Duplicate URL: ", record.url);
-        // }
-
-        // CHANGE HERE (ACCORDING TO THE CSV FILE)
-        articlesToInsertMap.set(record.url, {
-          platformId: platformId,
-          crawlTimestamp: record.crawl_timestamp
-            ? new Date(record.crawl_timestamp)
-            : undefined,
-          articleDate: record.date,
-          url: record.url,
-          title: record.title,
-          content: record.article,
-          author: record.author,
-        });
-      });
-
-      const articlesToInsert = Array.from(articlesToInsertMap.values());
-
-      // insert 1k records at a time
-      for (let i = 0; i < articlesToInsert.length; i += 1000) {
-        const articlesToInsertTemp = articlesToInsert.slice(i, i + 1000);
-
-        await tx
-          .insert(articles)
-          .values(articlesToInsertTemp)
-          .onConflictDoUpdate({
-            target: articles.url,
-            set: {
-              crawlTimestamp: sql`EXCLUDED.crawl_timestamp`,
-              articleDate: sql`EXCLUDED.article_date`,
-              title: sql`EXCLUDED.title`,
-              content: sql`EXCLUDED.content`,
-              author: sql`EXCLUDED.author`,
-            },
-          });
-      }
-    });
-  } catch (error) {
-    console.error(error);
-    process.exit(1);
-  }
-
-  console.log(`Articles inserted. Total insert length ${records.length}`);
-  process.exit(0);
-});
-
 // Read the CSV file
-fs.createReadStream(csvFilePath).pipe(csvParser);
+fs.readdirSync(csvDirPath)
+  .filter((filename: string) => {
+    return filename.split(".")[1] == "csv";
+  })
+  .forEach((file) => {
+    const csvFilePath = path.join(csvDirPath, file);
+
+    const records: IFileRecord[] = [];
+
+    fs.createReadStream(csvFilePath)
+      .pipe(
+        csv({
+          strict: true,
+          headers: [
+            "title",
+            "scrapping_date",
+            "article_date",
+            "author",
+            "link",
+            "content",
+          ],
+          skipLines: 1,
+        })
+      )
+      .on("data", function (data) {
+        try {
+          const validatedRecord = fileValidationScheme.parse(data);
+          records.push(validatedRecord);
+        } catch (error) {
+          console.error(error);
+          console.error("Error parsing record: ", data);
+          console.error("Current length: " + records.length);
+          process.exit(1);
+        }
+      })
+      .on("error", function (err) {
+        console.error(err);
+        process.exit(1);
+      })
+      .on("end", async function () {
+        console.log(`success parsing csv file: ${csvFilePath}`);
+        console.log("Total records: ", records.length);
+
+        try {
+          // Insert articles
+          await db.transaction(async (tx) => {
+            // create map to remove duplicate records based on URL
+            const articlesToInsertMap = new Map();
+            records.forEach((record) => {
+              articlesToInsertMap.set(record.link, {
+                platformId: platformId,
+                crawlTimestamp: record.scrapping_date
+                  ? new Date(record.scrapping_date)
+                  : undefined,
+                articleDate: record.article_date,
+                title: record.title,
+                content: record.content,
+                author: record.author,
+                url: record.link,
+              });
+            });
+
+            const articlesToInsert = Array.from(articlesToInsertMap.values());
+
+            if (articlesToInsert.length === 0) {
+              console.log("No new articles to insert");
+              return;
+            }
+
+            // insert 1k records at a time
+            for (let i = 0; i < articlesToInsert.length; i += 1000) {
+              const articlesToInsertTemp = articlesToInsert.slice(i, i + 1000);
+
+              if (articlesToInsertTemp.length === 0) {
+                break;
+              }
+
+              await tx
+                .insert(articles)
+                .values(articlesToInsertTemp)
+                .onConflictDoUpdate({
+                  target: articles.url,
+                  set: {
+                    crawlTimestamp: sql`EXCLUDED.crawl_timestamp`,
+                    articleDate: sql`EXCLUDED.article_date`,
+                    title: sql`EXCLUDED.title`,
+                    content: sql`EXCLUDED.content`,
+                    author: sql`EXCLUDED.author`,
+                  },
+                });
+            }
+
+            console.log(`Inserted articles length: ${articlesToInsert.length}`);
+          });
+        } catch (error) {
+          console.error(error);
+          process.exit(1);
+        }
+      });
+  });
