@@ -15,28 +15,31 @@ const postgresClientConnection = process.env.POSTGRES_CONNECTION_STRING;
 assert(postgresClientConnection, "POSTGRES_CONNECTION_STRING is required");
 
 // CHANGE HERE (ACCORDING TO THE CSV FILE)
+// Original headers = ["crawl_timestamp", "platform", "url", "title", "author", "date", "article"],
+// Below we modify the headers to match the database schema
 const csvHeaders = [
-  "scrapping_date",
-  "link",
+  "crawlTimestamp",
+  "platform",
+  "url",
   "title",
-  "content",
   "author",
-  "article_date",
+  "articleDate",
+  "content",
 ];
 
 // CHANGE HERE (ACCORDING TO THE CSV FILE)
 const fileValidationScheme = z.object({
-  scrapping_date: z.string().datetime().optional(),
-  link: z.string().url(),
+  crawlTimestamp: z.string().datetime().optional(),
+  url: z.string().url(),
   title: z.string(),
   content: z.string().min(1),
   author: z.string().optional(),
-  article_date: z.string().date(),
+  articleDate: z.string().date(),
 });
 
 type IFileRecord = z.infer<typeof fileValidationScheme>;
 
-const platformId = 1;
+const platformId = 7;
 
 //Hard coded directory has been used.
 // CHANGE HERE (FOR MULTIPLE CSV FILES)
@@ -47,7 +50,7 @@ const csvDirPath = "";
 // CHANGE HERE (FOR SINGLE CSV FILE)
 // MAKE THIS EMPTY IF YOU WANT TO USE MULTIPLE CSV FILES
 const csvFilePath =
-  "/home/yudis/Codes/Research/ITS/SUN-sentiment/import-csv-to-db/data/bisnis-crawler/scraped_articles/Analisis_Sentimen_scraped_articles.csv";
+  "/home/yudis-dev/Codes/Research/sun-sentiment/web-crawler/output/20240829174851_businessinsider.com.csv";
 /**
  * END OF CONFIGURATION
  */
@@ -138,16 +141,16 @@ dirResult.forEach((file) => {
           // create map to remove duplicate records based on URL
           const articlesToInsertMap = new Map();
           records.forEach((record) => {
-            articlesToInsertMap.set(record.link, {
+            articlesToInsertMap.set(record.url, {
               platformId: platformId,
-              crawlTimestamp: record.scrapping_date
-                ? new Date(record.scrapping_date)
+              crawlTimestamp: record.crawlTimestamp
+                ? new Date(record.crawlTimestamp)
                 : undefined,
-              articleDate: record.article_date,
+              articleDate: record.articleDate,
               title: record.title,
               content: record.content,
               author: record.author,
-              url: record.link,
+              url: record.url,
             });
           });
 
